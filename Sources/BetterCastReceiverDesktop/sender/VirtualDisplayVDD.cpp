@@ -613,14 +613,82 @@ bool VirtualDisplayVDD::removeVirtualDisplay(int index) {
 bool VirtualDisplayVDD::removeAllVirtualDisplays() {
     if (!m_vddInstalled) return false;
 
-    // Try named pipe
+    // Method 1: Named pipe (modern VDD Control running)
     if (tryNamedPipe("{\"command\":\"removeAll\"}")) {
         m_createdDisplayCount = 0;
         emit virtualDisplayRemoved();
         return true;
     }
 
-    // Fallback: write empty display list
+#ifdef _WIN32
+    // Method 2: pnputil /remove-device on every ROOT\DISPLAY\* device node.
+    // This is what actually works: the named pipe is only available while
+    // VDD Control.exe is open, and the settings-file path requires elevation
+    // for pnputil /restart-device. pnputil /remove-device also requires
+    // elevation, but BetterCast is expected to run as Administrator for VDD
+    // management (the installer already requests it).
+    {
+        bool removedAny = false;
+        HDEVINFO devInfo = SetupDiGetClassDevsW(
+            nullptr, nullptr, nullptr,
+            DIGCF_ALLCLASSES);  // include disconnected devices
+        if (devInfo != INVALID_HANDLE_VALUE) {
+            SP_DEVINFO_DATA devData = {};
+            devData.cbSize = sizeof(devData);
+            // Collect instance IDs first, then remove (modifying the set while
+            // iterating it is undefined behaviour with SetupAPI).
+            QStringList toRemove;
+            for (DWORD i = 0; SetupDiEnumDeviceInfo(devInfo, i, &devData); i++) {
+                wchar_t hwId[512] = {};
+                if (SetupDiGetDeviceRegistryPropertyW(devInfo, &devData,
+                        SPDRP_HARDWAREID, nullptr,
+                        reinterpret_cast<PBYTE>(hwId), sizeof(hwId), nullptr)) {
+                    QString id = QString::fromWCharArray(hwId).toLower();
+                    bool isVdd = id.contains("mttvdd") || id.contains("virtualdriver") ||
+                                 id.contains("iddsample") || id.contains("root\\display");
+                    if (isVdd) {
+                        wchar_t instanceId[MAX_PATH] = {};
+                        if (SetupDiGetDeviceInstanceIdW(devInfo, &devData,
+                                instanceId, MAX_PATH, nullptr)) {
+                            toRemove << QString::fromWCharArray(instanceId);
+                        }
+                    }
+                }
+                devData = {};
+                devData.cbSize = sizeof(devData);
+            }
+            SetupDiDestroyDeviceInfoList(devInfo);
+
+            for (const QString& id : toRemove) {
+                VDD_LOG("VDD: Removing device " + id);
+                QProcess proc;
+                proc.setProgram("pnputil");
+                proc.setArguments({"/remove-device", id});
+                proc.start();
+                if (proc.waitForFinished(15000)) {
+                    QString out = proc.readAllStandardOutput() + proc.readAllStandardError();
+                    VDD_LOG("VDD: pnputil remove " + id + ": " + out.trimmed());
+                    if (proc.exitCode() == 0) removedAny = true;
+                } else {
+                    VDD_LOG("VDD: pnputil remove timed out for " + id);
+                }
+            }
+        }
+
+        if (removedAny) {
+            m_createdDisplayCount = 0;
+            emit virtualDisplayRemoved();
+            emit statusChanged("Virtual displays removed");
+            return true;
+        }
+
+        // If pnputil failed (not elevated?), tell the user explicitly
+        VDD_LOG("VDD: pnputil /remove-device failed — BetterCast may need to run as Administrator to remove virtual displays");
+        emit error("Could not remove virtual displays — please restart BetterCast as Administrator");
+    }
+#endif
+
+    // Method 3: Write empty display list + restart driver (last resort)
     if (writeVddSettings({})) {
         notifyDriverRefresh();
         m_createdDisplayCount = 0;

@@ -31,6 +31,34 @@ QString AdbHelper::findAdb() {
     QString userProfile = qEnvironmentVariable("USERPROFILE");
     if (!userProfile.isEmpty()) {
         candidates << userProfile + "/AppData/Local/Android/Sdk/platform-tools/adb.exe";
+        candidates << userProfile + "/AppData/Local/Android/sdk/platform-tools/adb.exe";
+        candidates << userProfile + "/Downloads/platform-tools/adb.exe";
+        // Search Downloads 1-2 levels deep for any platform-tools folder (versioned zips)
+        QDir downloadsDir(userProfile + "/Downloads");
+        if (downloadsDir.exists()) {
+            for (const QString& sub : downloadsDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+                if (sub.contains("platform-tools", Qt::CaseInsensitive)) {
+                    QString c = downloadsDir.filePath(sub + "/adb.exe");
+                    if (QFileInfo::exists(c)) candidates << c;
+                }
+                QDir sub1(downloadsDir.filePath(sub));
+                for (const QString& sub2 : sub1.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+                    if (sub2.contains("platform-tools", Qt::CaseInsensitive)) {
+                        QString c = sub1.filePath(sub2 + "/adb.exe");
+                        if (QFileInfo::exists(c)) candidates << c;
+                    }
+                }
+            }
+        }
+    }
+    // Chocolatey / scoop / manual installs
+    candidates << "C:/ProgramData/chocolatey/bin/adb.exe";
+    candidates << "C:/tools/platform-tools/adb.exe";
+    {
+        QString localAppData2 = qEnvironmentVariable("LOCALAPPDATA");
+        if (!localAppData2.isEmpty()) {
+            candidates << localAppData2 + "/Android/sdk/platform-tools/adb.exe";
+        }
     }
 #else
     // Bundled with app (preferred — ships with the AppImage)
