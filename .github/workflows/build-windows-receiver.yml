@@ -271,12 +271,12 @@ jobs:
             "artifact/BetterCastReceiver.exe"
           Remove-Item "$env:RUNNER_TEMP\cert.pfx" -Force
 
-      - name: Verify NSIS (preinstalled on windows-2022)
+      - name: Ensure NSIS
         shell: pwsh
         run: |
-          # windows-2022 runners ship with NSIS at C:\Program Files (x86)\NSIS\
-          # already on PATH. We assert presence rather than reinstalling so we
-          # don't depend on third-party mirrors or winget at build time.
+          # NSIS was preinstalled on windows-2022 but is NOT present on the
+          # current windows-latest image (windows-2025). Detect it, and install
+          # via Chocolatey (preinstalled on all Windows runners) when missing.
           $makensis = (Get-Command makensis.exe -ErrorAction SilentlyContinue).Source
           if (-not $makensis) {
             $candidate = "C:\Program Files (x86)\NSIS\makensis.exe"
@@ -286,7 +286,20 @@ jobs:
             }
           }
           if (-not $makensis) {
-            Write-Error "makensis.exe not found — windows-2022 runner image changed?"
+            Write-Host "NSIS not found — installing via Chocolatey..."
+            choco install nsis --yes --no-progress
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "choco install nsis failed (exit $LASTEXITCODE)"
+              exit 1
+            }
+            $candidate = "C:\Program Files (x86)\NSIS\makensis.exe"
+            if (Test-Path $candidate) {
+              "C:\Program Files (x86)\NSIS" >> $env:GITHUB_PATH
+              $makensis = $candidate
+            }
+          }
+          if (-not $makensis) {
+            Write-Error "makensis.exe still not found after install attempt"
             exit 1
           }
           Write-Host "Using NSIS: $makensis"
